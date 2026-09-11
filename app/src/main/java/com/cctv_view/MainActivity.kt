@@ -18,10 +18,8 @@ import com.cctv_view.ui.theme.CCTVViewTheme
 import com.cctv_view.viewmodel.MainViewModel
 
 class MainActivity : ComponentActivity() {
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
         setContent {
             CCTVViewTheme {
                 Surface(
@@ -33,19 +31,24 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
-
-        // 调试：在 Activity 层面捕获按键
-        window.decorView.setOnKeyListener { _, keyCode, event ->
-            if (event.action == KeyEvent.ACTION_DOWN) {
-                Log.d("MainActivity", "Activity 捕获按键: $keyCode")
-            }
-            false // 返回 false 让事件继续传递
-        }
     }
 
     private fun openSettings() {
         val intent = Intent(this, SettingsActivity::class.java)
         startActivity(intent)
+    }
+
+    // Activity 层面的按键分发 - 确保按键能到达 Compose
+    override fun dispatchKeyEvent(event: KeyEvent?): Boolean {
+        event?.let {
+            Log.d("MainActivity", "dispatchKeyEvent: ${it.keyCode}, action: ${it.action}")
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        Log.d("MainActivity", "onKeyDown: $keyCode")
+        return super.onKeyDown(keyCode, event)
     }
 
     class ViewModelFactory(private val applicationContext: Context) : ViewModelProvider.Factory {

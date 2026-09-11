@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.cctv_view.data.Channel
 import com.cctv_view.data.ChannelCategory
 import com.cctv_view.data.ChannelRepository
+import com.cctv_view.data.PlayerType
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -16,6 +17,7 @@ import kotlinx.coroutines.launch
 data class PlayerUiState(
     val currentChannel: Channel? = null,
     val isChangingChannel: Boolean = false,
+    val isPlaying: Boolean = false,
     val showChannelList: Boolean = false,
     val showMenu: Boolean = false,
     val showNumberInput: Boolean = false,
@@ -25,27 +27,44 @@ data class PlayerUiState(
     val channelCategory: ChannelCategory = ChannelCategory.CCTV,
     val programInfo: String = "",
     val webViewKey: Int = 0,
-    val overlayDuration: Int = 5
+    val overlayDuration: Int = 5,
+    val playerType: PlayerType = PlayerType.EXOPLAYER,
+    val errorMessage: String = "",
+    val showError: Boolean = false
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
-
     private val repository = ChannelRepository(application)
     private val prefs = application.getSharedPreferences("cctv_view", android.content.Context.MODE_PRIVATE)
-
     private val _uiState = MutableStateFlow(PlayerUiState())
     val uiState: StateFlow<PlayerUiState> = _uiState.asStateFlow()
 
     private var numberInputJob: kotlinx.coroutines.Job? = null
 
     init {
-        loadLastChannel()
         loadSettings()
+        loadLastChannel()
     }
 
     private fun loadSettings() {
         val overlayDuration = prefs.getInt("overlay_duration", 5)
-        _uiState.update { it.copy(overlayDuration = overlayDuration) }
+        val playerTypeIndex = prefs.getInt("player_type", PlayerType.EXOPLAYER.ordinal)
+        val playerType = try {
+            PlayerType.entries[playerTypeIndex]
+        } catch (e: Exception) {
+            PlayerType.EXOPLAYER
+        }
+        _uiState.update {
+            it.copy(
+                overlayDuration = overlayDuration,
+                playerType = playerType
+            )
+        }
+    }
+
+    fun savePlayerType(type: PlayerType) {
+        prefs.edit().putInt("player_type", type.ordinal).apply()
+        _uiState.update { it.copy(playerType = type) }
     }
 
     private fun loadLastChannel() {
@@ -68,16 +87,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 webViewKey = it.webViewKey + 1,
                 programInfo = "",
                 overlayMessage = "${channel.name}\n加载中...",
-                showOverlay = true
+                showOverlay = true,
+                showError = false,
+                errorMessage = "",
+                isPlaying = false
             )
         }
         saveLastChannel()
 
-        // 根据设置决定隐藏时机（实际会在 onPageFinished 中提前隐藏）
+        // 原生播放器会自动回调状态，这里设置超时保护
         viewModelScope.launch {
-            delay(3000)
-            if (_uiState.value.isChangingChannel) {
-                _uiState.update { it.copy(isChangingChannel = false) }
+            delay(8000)
+            if (_uiState.value.isChangingChannel && !_uiState.value.isPlaying) {
+                _uiState.update { state ->
+                    state.copy(
+                        isChangingChannel = false,
+                        showError = true,
+                        errorMessage = "加载超时，请尝试切换播放源或检查网络",
+                        showOverlay = false
+                    )
+                }
             }
         }
 
@@ -85,14 +114,66 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val duration = (_uiState.value.overlayDuration * 1000L)
         viewModelScope.launch {
             delay(duration)
-            _uiState.update { it.copy(showOverlay = false) }
+            if (_uiState.value.showOverlay && _uiState.value.isPlaying) {
+                _uiState.update { it.copy(showOverlay = false) }
+            }
+        }
+    }
+
+    fun onPlaybackStateChanged(isPlaying: Boolean, message: String) {
+        if (isPlaying) {
+            val channelName = _uiState.value.currentChannel?.name ?: ""
+            val showProgramInfo = prefs.getBoolean("show_program_info", true)
+            _uiState.update {
+                it.copy(
+                    isChangingChannel = false,
+                    isPlaying = true,
+                    showError = false,
+                    errorMessage = "",
+                    overlayMessage = if (showProgramInfo) channelName else "",
+                    showOverlay = showProgramInfo
+                )
+            }
+            // 定时隐藏浮层
+            if (showProgramInfo) {
+                val duration = (_uiState.value.overlayDuration * 1000L)
+                viewModelScope.launch {
+                    delay(duration)
+                    _uiState.update { state -> state.copy(showOverlay = false) }
+                }
+            }
+        } else if (message.isNotEmpty()) {
+            _uiState.update {
+                it.copy(
+                    isPlaying = false,
+                    overlayMessage = message,
+                    showOverlay = true
+                )
+            }
+        }
+    }
+
+    fun onPlaybackError(errorMsg: String) {
+        _uiState.update {
+            it.copy(
+                isChangingChannel = false,
+                isPlaying = false,
+                showError = true,
+                errorMessage = errorMsg,
+                showOverlay = false
+            )
+        }
+    }
+
+    fun retryPlayback() {
+        _uiState.value.currentChannel?.let { channel ->
+            changeChannel(channel)
         }
     }
 
     fun nextChannel() {
         val current = _uiState.value.currentChannel ?: return
         val directChange = prefs.getBoolean("direct_channel_change", false)
-
         if (directChange) {
             val next = repository.getNextChannel(current.id)
             next?.let { changeChannel(it) }
@@ -107,7 +188,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun previousChannel() {
         val current = _uiState.value.currentChannel ?: return
         val directChange = prefs.getBoolean("direct_channel_change", false)
-
         if (directChange) {
             val prev = repository.getPreviousChannel(current.id)
             prev?.let { changeChannel(it) }
@@ -137,17 +217,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             _uiState.value.currentChannel?.name ?: ""
         }
-
         _uiState.update {
             it.copy(
                 isChangingChannel = false,
+                isPlaying = true,
                 programInfo = programInfo,
                 overlayMessage = message,
                 showOverlay = showProgramInfo
             )
         }
-
-        // 定时隐藏浮层
         if (showProgramInfo) {
             val duration = (_uiState.value.overlayDuration * 1000L)
             viewModelScope.launch {
@@ -191,10 +269,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun appendNumber(number: Int) {
         val newBuffer = _uiState.value.numberInputBuffer + number.toString()
         _uiState.update { it.copy(numberInputBuffer = newBuffer, showNumberInput = true) }
-
         numberInputJob?.cancel()
         numberInputJob = viewModelScope.launch {
-            delay(3000)
+            delay(2000) // 缩短到2秒，响应更快
             processNumberInput()
         }
     }
@@ -222,21 +299,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun refreshPage() {
-        _uiState.update { it.copy(webViewKey = it.webViewKey + 1) }
-        // 显示刷新提示
         _uiState.update {
             it.copy(
+                webViewKey = it.webViewKey + 1,
                 showOverlay = true,
-                overlayMessage = "刷新中..."
+                overlayMessage = "刷新中...",
+                showError = false
             )
         }
-        viewModelScope.launch {
-            delay(2000)
-            _uiState.update { state -> state.copy(showOverlay = false) }
+        // 原生播放器：重新加载
+        _uiState.value.currentChannel?.let { channel ->
+            changeChannel(channel)
         }
     }
 
-    // 供 UI 使用的方法
     fun getCCTVChannels(): List<Channel> = repository.getCCTVChannels()
     fun getLocalChannels(): List<Channel> = repository.getLocalChannels()
     fun getAllChannels(): List<Channel> = repository.getAllChannels()

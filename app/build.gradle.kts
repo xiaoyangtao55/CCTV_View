@@ -62,8 +62,13 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.7.0")
 
-    // WebView
+    // WebView（保留作为备用播放方式）
     implementation("androidx.webkit:webkit:1.10.0")
+
+    // ExoPlayer 视频播放器（原生播放，不依赖 WebView）
+    implementation("androidx.media3:media3-exoplayer:1.3.1")
+    implementation("androidx.media3:media3-ui:1.3.1")
+    implementation("androidx.media3:media3-exoplayer-hls:1.3.1")
 
     // JSON 解析
     implementation("com.google.code.gson:gson:2.10.1")
